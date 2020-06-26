@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <set>
 #include <string>
 
 using google::protobuf::Descriptor;
@@ -313,78 +314,65 @@ string ModuleAlias(const string& filename) {
   return basename + "_pb";
 }
 
-string JSMessageType(const Descriptor *desc, const FileDescriptor *file) {
-  string module_prefix;
-  if (desc->file() != file) {
-    module_prefix = ModuleAlias(desc->file()->name()) + ".";
-  }
+string JSMessageType(const Descriptor *desc) {
   string class_name;
   class_name = StripPrefixString(desc->full_name(), desc->file()->package());
   if (!class_name.empty() && class_name[0] == '.') {
     class_name = class_name.substr(1);
   }
-  return module_prefix + class_name;
+  return ModuleAlias(desc->file()->name()) + "." + class_name;
 }
 
-string JSElementType(const FieldDescriptor *desc, const FileDescriptor *file)
-{
-  string js_field_type;
-  switch (desc->type())
-  {
-  case FieldDescriptor::TYPE_DOUBLE:
-  case FieldDescriptor::TYPE_FLOAT:
-  case FieldDescriptor::TYPE_INT32:
-  case FieldDescriptor::TYPE_UINT32:
-  case FieldDescriptor::TYPE_SINT32:
-  case FieldDescriptor::TYPE_FIXED32:
-  case FieldDescriptor::TYPE_SFIXED32:
-    js_field_type = "number";
-    break;
-  case FieldDescriptor::TYPE_INT64:
-  case FieldDescriptor::TYPE_UINT64:
-  case FieldDescriptor::TYPE_SINT64:
-  case FieldDescriptor::TYPE_FIXED64:
-  case FieldDescriptor::TYPE_SFIXED64:
-    if (desc->options().jstype() == FieldOptions::JS_STRING) {
-      js_field_type = "string";
-    } else {
-      js_field_type = "number";
-    }
-    break;
-  case FieldDescriptor::TYPE_BOOL:
-    js_field_type = "boolean";
-    break;
-  case FieldDescriptor::TYPE_STRING:
-    js_field_type = "string";
-    break;
-  case FieldDescriptor::TYPE_BYTES:
-    js_field_type = "Uint8Array | string";
-    break;
-  case FieldDescriptor::TYPE_ENUM:
-    if (desc->enum_type()->file() != file) {
-      js_field_type = ModuleAlias(desc->enum_type()->file()->name());
-    }
-    js_field_type += StripPrefixString(desc->enum_type()->full_name(),
-                                       desc->enum_type()->file()->package());
-    if (!js_field_type.empty() && js_field_type[0] == '.') {
-      js_field_type = js_field_type.substr(1);
-    }
-    break;
-  case FieldDescriptor::TYPE_MESSAGE:
-    js_field_type = JSMessageType(desc->message_type(), file);
-    break;
-  default:
-    js_field_type = "{}";
-    break;
+string JSElementType(const FieldDescriptor *desc) {
+  switch (desc->type()) {
+    case FieldDescriptor::TYPE_DOUBLE:
+    case FieldDescriptor::TYPE_FLOAT:
+    case FieldDescriptor::TYPE_INT32:
+    case FieldDescriptor::TYPE_UINT32:
+    case FieldDescriptor::TYPE_SINT32:
+    case FieldDescriptor::TYPE_FIXED32:
+    case FieldDescriptor::TYPE_SFIXED32:
+      return "number";
+
+    case FieldDescriptor::TYPE_INT64:
+    case FieldDescriptor::TYPE_UINT64:
+    case FieldDescriptor::TYPE_SINT64:
+    case FieldDescriptor::TYPE_FIXED64:
+    case FieldDescriptor::TYPE_SFIXED64:
+      if (desc->options().jstype() == FieldOptions::JS_STRING) {
+        return "string";
+      } else {
+        return "number";
+      }
+
+    case FieldDescriptor::TYPE_BOOL:
+      return "boolean";
+
+    case FieldDescriptor::TYPE_STRING:
+      return "string";
+
+    case FieldDescriptor::TYPE_BYTES:
+      return "Uint8Array | string";
+
+    case FieldDescriptor::TYPE_ENUM:
+      return ModuleAlias(desc->enum_type()->file()->name())
+          + StripPrefixString(
+                desc->enum_type()->full_name(),
+                desc->enum_type()->file()->package());
+
+    case FieldDescriptor::TYPE_MESSAGE:
+      return JSMessageType(desc->message_type());
+
+    default:
+      return "{}";
   }
-  return js_field_type;
 }
 
-string JSFieldType(const FieldDescriptor *desc, const FileDescriptor *file) {
-  string js_field_type = JSElementType(desc, file);
+string JSFieldType(const FieldDescriptor *desc) {
+  string js_field_type = JSElementType(desc);
   if (desc->is_map()) {
-    string key_type = JSFieldType(desc->message_type()->field(0), file);
-    string value_type = JSFieldType(desc->message_type()->field(1), file);
+    string key_type = JSFieldType(desc->message_type()->field(0));
+    string value_type = JSFieldType(desc->message_type()->field(1));
     return "jspb.Map<" + key_type + ", " + value_type + ">";
   }
   if (desc->is_repeated())
@@ -394,18 +382,17 @@ string JSFieldType(const FieldDescriptor *desc, const FileDescriptor *file) {
   return js_field_type;
 }
 
-string AsObjectFieldType(const FieldDescriptor *desc,
-                         const FileDescriptor *file) {
+string AsObjectFieldType(const FieldDescriptor *desc) {
   if (desc->type() != FieldDescriptor::TYPE_MESSAGE) {
-    return JSFieldType(desc, file);
+    return JSFieldType(desc);
   }
   if (desc->is_map()) {
     const Descriptor* message = desc->message_type();
-    string key_type = AsObjectFieldType(message->field(0), file);
-    string value_type = AsObjectFieldType(message->field(1), file);
+    string key_type = AsObjectFieldType(message->field(0));
+    string value_type = AsObjectFieldType(message->field(1));
     return "Array<[" + key_type + ", " + value_type + "]>";
   }
-  string field_type = JSMessageType(desc->message_type(), file) + ".AsObject";
+  string field_type = JSMessageType(desc->message_type()) + ".AsObject";
   if (desc->is_repeated()) {
     return "Array<" + field_type + ">";
   }
@@ -521,35 +508,26 @@ string GetBasename(string filename) {
   return basename;
 }
 
-/* Finds all message types used in all services in the file, and returns them
- * as a map of fully qualified message type name to message descriptor */
-std::map<string, const Descriptor*> GetAllMessages(const FileDescriptor* file) {
-  std::map<string, const Descriptor*> message_types;
-  for (int service_index = 0;
-       service_index < file->service_count();
-       ++service_index) {
-    const ServiceDescriptor* service = file->service(service_index);
-    for (int method_index = 0;
-         method_index < service->method_count();
-         ++method_index) {
-      const MethodDescriptor *method = service->method(method_index);
-      message_types[method->input_type()->full_name()] = method->input_type();
-      message_types[method->output_type()->full_name()] = method->output_type();
+// Finds all message types used in all services in the file.
+std::set<const Descriptor*> GetAllMessages(const FileDescriptor* file) {
+  std::set<const Descriptor*> messages;
+  for (int s = 0; s < file->service_count(); ++s) {
+    const ServiceDescriptor* service = file->service(s);
+    for (int m = 0; m < service->method_count(); ++m) {
+      const MethodDescriptor *method = service->method(m);
+      messages.insert(method->input_type());
+      messages.insert(method->output_type());
     }
   }
 
-  return message_types;
+  return messages;
 }
 
-void PrintMessagesDeps(Printer* printer, const FileDescriptor* file) {
-  std::map<string, const Descriptor*> messages = GetAllMessages(file);
-  std::map<string, string> vars;
-  for (std::map<string, const Descriptor*>::iterator it = messages.begin();
-       it != messages.end(); it++) {
-    vars["full_name"] = it->first;
+void PrintClosureDependencies(Printer* printer, const FileDescriptor* file) {
+  for (const Descriptor* message : GetAllMessages(file)) {
     printer->Print(
-        vars,
-        "goog.require('proto.$full_name$');\n");
+        "goog.require('proto.$full_name$');\n",
+        "full_name", message->full_name());
   }
   printer->Print("\n\n\n");
 }
@@ -599,64 +577,21 @@ void PrintCommonJsMessagesDeps(Printer* printer, const FileDescriptor* file) {
   }
 }
 
-void PrintES6Dependencies(Printer* printer, const FileDescriptor *file) {
-  std::map<string, string> vars;
-
-  for (int i = 0; i < file->dependency_count(); i++) {
-    const string& name = file->dependency(i)->name();
-    vars["alias"] = ModuleAlias(name);
-    vars["dep_filename"] = GetRootPath(file->name(), name) + StripProto(name);
-    // we need to give each cross-file import an alias
-    printer->Print(
-        vars,
-        "import * as $alias$ from '$dep_filename$_pb';\n");
-  }
-
-  if (file->dependency_count() != 0) {
-    printer->Print("\n");
-  }
-}
-
 void PrintES6Imports(Printer* printer, const FileDescriptor* file) {
   std::map<string, string> vars;
 
   printer->Print("import * as grpcWeb from 'grpc-web';\n\n");
-  PrintES6Dependencies(printer, file);
 
-  std::map<string, const Descriptor*> messages = GetAllMessages(file);
-  for (std::map<string, const Descriptor*>::iterator it = messages.begin();
-       it != messages.end();) {
-    if (it->second->file() != file) {
-      it = messages.erase(it);
-    } else {
-      it++;
-    }
+  std::set<const Descriptor*> local_messages;
+  for (const Descriptor* message : GetAllMessages(file)) {
+    const string& name = message->file()->name();
+    // We need to give each cross-file import an alias.
+    printer->Print(
+        "import * as $alias$ from '$dep_filename$_pb';\n",
+        "alias", name,
+        "dep_filename", GetRootPath(file->name(), name) + StripProto(name));
   }
-
-  if (messages.empty()) {
-    return;
-  }
-
-  std::map<string, const Descriptor*>::iterator it = messages.begin();
-  vars["base_name"] = GetBasename(StripProto(file->name()));
-  vars["class_name"] = it->second->name();
-
-  if (messages.size() == 1) {
-    printer->Print(vars, "import {$class_name$} from './$base_name$_pb';\n\n");
-    return;
-  }
-
-  printer->Print("import {\n");
-  printer->Indent();
-  printer->Print(vars, "$class_name$");
-
-  for (it++; it != messages.end(); it++) {
-    vars["class_name"] = it->second->name();
-    printer->Print(vars, ",\n$class_name$");
-  }
-
-  printer->Outdent();
-  printer->Print(vars, "} from './$base_name$_pb';\n\n");
+  printer->Print("\n\n");
 }
 
 void PrintTypescriptFile(Printer* printer, const FileDescriptor* file,
@@ -696,8 +631,8 @@ void PrintTypescriptFile(Printer* printer, const FileDescriptor* file,
       const MethodDescriptor* method = service->method(method_index);
       vars["js_method_name"] = LowercaseFirstLetter(method->name());
       vars["method_name"] = method->name();
-      vars["input_type"] = JSMessageType(method->input_type(), file);
-      vars["output_type"] = JSMessageType(method->output_type(), file);
+      vars["input_type"] = JSMessageType(method->input_type());
+      vars["output_type"] = JSMessageType(method->output_type());
       vars["serialize_func_name"] = GetSerializeMethodName(vars["mode"]);
       vars["deserialize_func_name"] = GetDeserializeMethodName(vars["mode"]);
       if (!method->client_streaming()) {
@@ -810,8 +745,8 @@ void PrintGrpcWebDtsClientClass(Printer* printer, const FileDescriptor* file,
          ++method_index) {
       const MethodDescriptor* method = service->method(method_index);
       vars["js_method_name"] = LowercaseFirstLetter(method->name());
-      vars["input_type"] = JSMessageType(method->input_type(), file);
-      vars["output_type"] = JSMessageType(method->output_type(), file);
+      vars["input_type"] = JSMessageType(method->input_type());
+      vars["output_type"] = JSMessageType(method->output_type());
       if (!method->client_streaming()) {
         if (method->server_streaming()) {
           printer->Print(vars, "$js_method_name$(\n");
@@ -906,7 +841,7 @@ void PrintProtoDtsMessage(Printer *printer, const Descriptor *desc,
   for (int i = 0; i < desc->field_count(); i++) {
     const FieldDescriptor* field = desc->field(i);
     vars["js_field_name"] = JSFieldName(field);
-    vars["js_field_type"] = JSFieldType(field, file);
+    vars["js_field_type"] = JSFieldType(field);
     if (field->type() != FieldDescriptor::TYPE_MESSAGE ||
         field->is_repeated()) {
       printer->Print(vars,
@@ -940,7 +875,7 @@ void PrintProtoDtsMessage(Printer *printer, const Descriptor *desc,
     }
     if (field->is_repeated() && !field->is_map()) {
       vars["js_field_name"] = JSElementName(field);
-      vars["js_field_type"] = JSElementType(field, file);
+      vars["js_field_type"] = JSElementType(field);
       if (field->type() != FieldDescriptor::TYPE_MESSAGE) {
         printer->Print(vars,
                        "add$js_field_name$(value: $js_field_type$, "
@@ -990,7 +925,7 @@ void PrintProtoDtsMessage(Printer *printer, const Descriptor *desc,
       js_field_name = "pb_" + js_field_name;
     }
     vars["js_field_name"] = js_field_name;
-    vars["js_field_type"] = AsObjectFieldType(field, file);
+    vars["js_field_type"] = AsObjectFieldType(field);
     if (field->type() != FieldDescriptor::TYPE_MESSAGE ||
         field->is_repeated()) {
       printer->Print(vars, "$js_field_name$: $js_field_type$,\n");
@@ -1025,8 +960,17 @@ void PrintProtoDtsMessage(Printer *printer, const Descriptor *desc,
 
 void PrintProtoDtsFile(Printer *printer, const FileDescriptor *file)
 {
-  printer->Print("import * as jspb from \"google-protobuf\"\n\n");
-  PrintES6Dependencies(printer, file);
+  printer->Print("import * as jspb from 'google-protobuf'\n\n");
+
+  for (int i = 0; i < file->dependency_count(); i++) {
+    const string& name = file->dependency(i)->name();
+    // We need to give each cross-file import an alias.
+    printer->Print(
+        "import * as $alias$ from '$dep_filename$_pb';\n",
+        "alias", ModuleAlias(name),
+        "dep_filename", GetRootPath(file->name(), name) + StripProto(name));
+  }
+  printer->Print("\n\n");
 
   for (int i = 0; i < file->message_type_count(); i++) {
     PrintProtoDtsMessage(printer, file->message_type(i), file);
@@ -1426,8 +1370,8 @@ void PrintMultipleFilesMode(const FileDescriptor* file, string file_name,
   printer2.Print(vars, "goog.require('grpc.web.ClientReadableStream');\n");
   printer2.Print(vars, "goog.require('grpc.web.Error');\n");
 
-  PrintMessagesDeps(&printer1, file);
-  PrintMessagesDeps(&printer2, file);
+  PrintClosureDependencies(&printer1, file);
+  PrintClosureDependencies(&printer2, file);
   printer1.Print("goog.scope(function() {\n\n");
   printer2.Print("goog.scope(function() {\n\n");
 
@@ -1707,7 +1651,7 @@ class GrpcCodeGenerator : public CodeGenerator {
         printer.Print(vars, "goog.require('grpc.web.ClientReadableStream');\n");
         printer.Print(vars, "goog.require('grpc.web.Error');\n");
 
-        PrintMessagesDeps(&printer, file);
+        PrintClosureDependencies(&printer, file);
         printer.Print("goog.scope(function() {\n\n");
         break;
       case ImportStyle::COMMONJS:
