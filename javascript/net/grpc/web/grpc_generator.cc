@@ -583,13 +583,19 @@ void PrintES6Imports(Printer* printer, const FileDescriptor* file) {
   printer->Print("import * as grpcWeb from 'grpc-web';\n\n");
 
   std::set<const Descriptor*> local_messages;
+  std::set<string> imports;
   for (const Descriptor* message : GetAllMessages(file)) {
     const string& name = message->file()->name();
+    string dep_filename = GetRootPath(file->name(), name) + StripProto(name);
+    if (imports.find(dep_filename) != imports.end()) {
+      continue;
+    }
+    imports.insert(dep_filename);
     // We need to give each cross-file import an alias.
     printer->Print(
         "import * as $alias$ from '$dep_filename$_pb';\n",
-        "alias", name,
-        "dep_filename", GetRootPath(file->name(), name) + StripProto(name));
+        "alias", ModuleAlias(name),
+        "dep_filename", dep_filename);
   }
   printer->Print("\n\n");
 }
