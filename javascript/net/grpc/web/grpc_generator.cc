@@ -314,16 +314,23 @@ string ModuleAlias(const string& filename) {
   return basename + "_pb";
 }
 
-string JSMessageType(const Descriptor *desc) {
+string JSMessageType(const Descriptor *desc, const FileDescriptor *file) {
   string class_name;
   class_name = StripPrefixString(desc->full_name(), desc->file()->package());
   if (!class_name.empty() && class_name[0] == '.') {
     class_name = class_name.substr(1);
   }
+  if (desc->file() == file) {
+    return class_name;
+  }
   return ModuleAlias(desc->file()->name()) + "." + class_name;
 }
 
-string JSElementType(const FieldDescriptor *desc) {
+string JSMessageType(const Descriptor *desc) {
+  return JSMessageType(desc, nullptr);
+}
+
+string JSElementType(const FieldDescriptor *desc, const FileDescriptor *file) {
   switch (desc->type()) {
     case FieldDescriptor::TYPE_DOUBLE:
     case FieldDescriptor::TYPE_FLOAT:
@@ -355,24 +362,35 @@ string JSElementType(const FieldDescriptor *desc) {
       return "Uint8Array | string";
 
     case FieldDescriptor::TYPE_ENUM:
+      if (desc->enum_type()->file() == file) {
+        string enum_name =
+            StripPrefixString(
+                desc->enum_type()->full_name(),
+                desc->enum_type()->file()->package());
+        return enum_name.substr(1);
+      }
       return ModuleAlias(desc->enum_type()->file()->name())
           + StripPrefixString(
                 desc->enum_type()->full_name(),
                 desc->enum_type()->file()->package());
 
     case FieldDescriptor::TYPE_MESSAGE:
-      return JSMessageType(desc->message_type());
+      return JSMessageType(desc->message_type(), file);
 
     default:
       return "{}";
   }
 }
 
-string JSFieldType(const FieldDescriptor *desc) {
-  string js_field_type = JSElementType(desc);
+string JSElementType(const FieldDescriptor *desc) {
+  return JSElementType(desc, nullptr);
+}
+
+string JSFieldType(const FieldDescriptor *desc, const FileDescriptor *file) {
+  string js_field_type = JSElementType(desc, file);
   if (desc->is_map()) {
-    string key_type = JSFieldType(desc->message_type()->field(0));
-    string value_type = JSFieldType(desc->message_type()->field(1));
+    string key_type = JSFieldType(desc->message_type()->field(0), file);
+    string value_type = JSFieldType(desc->message_type()->field(1), file);
     return "jspb.Map<" + key_type + ", " + value_type + ">";
   }
   if (desc->is_repeated())
@@ -382,21 +400,26 @@ string JSFieldType(const FieldDescriptor *desc) {
   return js_field_type;
 }
 
-string AsObjectFieldType(const FieldDescriptor *desc) {
+string AsObjectFieldType(
+    const FieldDescriptor *desc, const FileDescriptor *file) {
   if (desc->type() != FieldDescriptor::TYPE_MESSAGE) {
-    return JSFieldType(desc);
+    return JSFieldType(desc, file);
   }
   if (desc->is_map()) {
     const Descriptor* message = desc->message_type();
-    string key_type = AsObjectFieldType(message->field(0));
-    string value_type = AsObjectFieldType(message->field(1));
+    string key_type = AsObjectFieldType(message->field(0), file);
+    string value_type = AsObjectFieldType(message->field(1), file);
     return "Array<[" + key_type + ", " + value_type + "]>";
   }
-  string field_type = JSMessageType(desc->message_type()) + ".AsObject";
+  string field_type = JSMessageType(desc->message_type(), file) + ".AsObject";
   if (desc->is_repeated()) {
     return "Array<" + field_type + ">";
   }
   return field_type;
+}
+
+string AsObjectFieldType(const FieldDescriptor *desc) {
+  return AsObjectFieldType(desc, nullptr);
 }
 
 string JSElementName(const FieldDescriptor *desc) {
@@ -847,7 +870,7 @@ void PrintProtoDtsMessage(Printer *printer, const Descriptor *desc,
   for (int i = 0; i < desc->field_count(); i++) {
     const FieldDescriptor* field = desc->field(i);
     vars["js_field_name"] = JSFieldName(field);
-    vars["js_field_type"] = JSFieldType(field);
+    vars["js_field_type"] = JSFieldType(field, file);
     if (field->type() != FieldDescriptor::TYPE_MESSAGE ||
         field->is_repeated()) {
       printer->Print(vars,
@@ -881,7 +904,7 @@ void PrintProtoDtsMessage(Printer *printer, const Descriptor *desc,
     }
     if (field->is_repeated() && !field->is_map()) {
       vars["js_field_name"] = JSElementName(field);
-      vars["js_field_type"] = JSElementType(field);
+      vars["js_field_type"] = JSElementType(field, file);
       if (field->type() != FieldDescriptor::TYPE_MESSAGE) {
         printer->Print(vars,
                        "add$js_field_name$(value: $js_field_type$, "
@@ -931,7 +954,7 @@ void PrintProtoDtsMessage(Printer *printer, const Descriptor *desc,
       js_field_name = "pb_" + js_field_name;
     }
     vars["js_field_name"] = js_field_name;
-    vars["js_field_type"] = AsObjectFieldType(field);
+    vars["js_field_type"] = AsObjectFieldType(field, file);
     if (field->type() != FieldDescriptor::TYPE_MESSAGE ||
         field->is_repeated()) {
       printer->Print(vars, "$js_field_name$: $js_field_type$,\n");
