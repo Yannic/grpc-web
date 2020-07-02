@@ -321,6 +321,8 @@ string JSMessageType(const Descriptor *desc, const FileDescriptor *file) {
     class_name = class_name.substr(1);
   }
   if (desc->file() == file) {
+    // [for protobuf .d.ts files only] Do not add the module prefix for local
+    // messages.
     return class_name;
   }
   return ModuleAlias(desc->file()->name()) + "." + class_name;
@@ -605,7 +607,6 @@ void PrintES6Imports(Printer* printer, const FileDescriptor* file) {
 
   printer->Print("import * as grpcWeb from 'grpc-web';\n\n");
 
-  std::set<const Descriptor*> local_messages;
   std::set<string> imports;
   for (const Descriptor* message : GetAllMessages(file)) {
     const string& name = message->file()->name();
