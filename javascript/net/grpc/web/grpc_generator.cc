@@ -384,10 +384,6 @@ string JSElementType(const FieldDescriptor *desc, const FileDescriptor *file) {
   }
 }
 
-string JSElementType(const FieldDescriptor *desc) {
-  return JSElementType(desc, nullptr);
-}
-
 string JSFieldType(const FieldDescriptor *desc, const FileDescriptor *file) {
   string js_field_type = JSElementType(desc, file);
   if (desc->is_map()) {
@@ -418,10 +414,6 @@ string AsObjectFieldType(
     return "Array<" + field_type + ">";
   }
   return field_type;
-}
-
-string AsObjectFieldType(const FieldDescriptor *desc) {
-  return AsObjectFieldType(desc, nullptr);
 }
 
 string JSElementName(const FieldDescriptor *desc) {
