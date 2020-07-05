@@ -1582,6 +1582,52 @@ string GeneratorOptions::OutputFile(const string& proto_file) const {
   return StripProto(proto_file) + "_grpc_web_pb.js";
 }
 
+// Base-class for all gRPC-Web client generators.
+//
+// Code-generating methods are called in the following order:
+//   - EmitFileHeader
+//   - EmitImports
+class GrpcWebClientGenerator {
+ public:
+  GrpcWebClientGenerator(Printer* printer);
+  virtual ~GrpcWebClientGenerator();
+
+ protected:
+  Printer* printer() const { return printer_; }
+
+  // Emits the header of the file containing clients for |services|.
+  //
+  // This typically includes a warning that this file is generated
+  // and a summary of what the file contains.
+  virtual void EmitFileHeader(
+      std::set<const ServiceDescriptor*> services) const;
+
+  //
+  virtual void EmitImports(std::set<const Descriptor*> messages) const = 0;
+
+ private:
+  Printer* printer_;
+};
+
+GrpcWebClientGenerator::GrpcWebClientGenerator(Printer* printer)
+    : printer_(printer) {}
+
+GrpcWebClientGenerator::~GrpcWebClientGenerator() = default;
+
+void GrpcWebClientGenerator::EmitFileHeader(
+    std::set<const ServiceDescriptor*> services) const {
+  printer()->Print(
+      "/**\n"
+      " * @fileoverview gRPC-Web generated client stub for $services$\n"
+      " * @enhanceable\n"
+      " * @public\n"
+      " */\n\n"
+      "// GENERATED CODE -- DO NOT EDIT!\n\n\n"
+      "/* eslint-disable */\n"
+      "// @ts-nocheck\n",
+      "services", "TODO");
+}
+
 class GrpcCodeGenerator : public CodeGenerator {
  public:
   GrpcCodeGenerator() {}
