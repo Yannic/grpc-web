@@ -65,8 +65,10 @@ class GrpcWebClientReadableStream {
   /**
    * @param {!GenericTransportInterface} genericTransportInterface The
    *   GenericTransportInterface
+   * @param {number=} maxMessageLength The maximum allowed inbound message
+   *   length in bytes, forwarded to the stream parser. Defaults to 4 MB.
    */
-  constructor(genericTransportInterface) {
+  constructor(genericTransportInterface, maxMessageLength = 4 * 1024 * 1024) {
     /**
      * @const
      * @private
@@ -132,68 +134,79 @@ class GrpcWebClientReadableStream {
      * @type {!GrpcWebStreamParser} The grpc-web stream parser
      * @const
      */
-    this.parser_ = new GrpcWebStreamParser();
+    this.parser_ = new GrpcWebStreamParser(maxMessageLength);
 
-    var self = this;
+    const self = this;
     events.listen(this.xhr_, EventType.READY_STATE_CHANGE, function(e) {
-      var contentType = self.xhr_.getStreamingResponseHeader('Content-Type');
+      let contentType = self.xhr_.getStreamingResponseHeader('Content-Type');
       if (!contentType) return;
       contentType = contentType.toLowerCase();
 
+      let byteSource;
       if (googString.startsWith(contentType, 'application/grpc-web-text')) {
         // Ensure responseText is not null
-        var responseText = self.xhr_.getResponseText() || "";
-        var newPos = responseText.length - responseText.length % 4;
-        var newData = responseText.substr(self.pos_, newPos - self.pos_);
+        const responseText = self.xhr_.getResponseText() || '';
+        const newPos = responseText.length - responseText.length % 4;
+        const newData = responseText.substr(self.pos_, newPos - self.pos_);
         if (newData.length == 0) return;
         self.pos_ = newPos;
-        var byteSource = googCrypt.decodeStringToUint8Array(newData);
+        byteSource = googCrypt.decodeStringToUint8Array(newData);
       } else if (googString.startsWith(contentType, 'application/grpc')) {
-        var byteSource = new Uint8Array(
+        byteSource = new Uint8Array(
             /** @type {!ArrayBuffer} */ (self.xhr_.getResponse()));
       } else {
         self.handleError_(
             new RpcError(StatusCode.UNKNOWN, 'Unknown Content-type received.'));
         return;
       }
-      var messages = null;
+      let messages = null;
       try {
         messages = self.parser_.parse(byteSource);
       } catch (err) {
-        self.handleError_(
-            new RpcError(StatusCode.UNKNOWN, 'Error in parsing response body'));
+        if (self.parser_.getMessageLengthExceeded()) {
+          // Mirror grpc-go/grpc-java/core, which return RESOURCE_EXHAUSTED when
+          // an inbound message exceeds the configured max receive message size.
+          self.handleError_(new RpcError(
+              StatusCode.RESOURCE_EXHAUSTED,
+              'Received message larger than max receive message size'));
+        } else {
+          self.handleError_(
+              new RpcError(StatusCode.UNKNOWN, 'Error in parsing response body'));
+        }
       }
       if (messages) {
-        var FrameType = GrpcWebStreamParser.FrameType;
-        for (var i = 0; i < messages.length; i++) {
+        const FrameType = GrpcWebStreamParser.FrameType;
+        for (let i = 0; i < messages.length; i++) {
           if (FrameType.DATA in messages[i]) {
-            var data = messages[i][FrameType.DATA];
+            const data = messages[i][FrameType.DATA];
             if (data) {
+              let isResponseDeserialized = false;
               let response;
               try {
                 response = self.responseDeserializeFn_(data);
+                isResponseDeserialized = true;
               } catch (err) {
                 self.handleError_(new RpcError(
                     StatusCode.INTERNAL,
                     `Error when deserializing response data; error: ${err}` +
-                    `, response: ${response}`));
+                        `, response: ${response}`));
               }
-              if (response) {
+              if (isResponseDeserialized) {
                 self.sendDataCallbacks_(response);
               }
             }
           }
           if (FrameType.TRAILER in messages[i]) {
             if (messages[i][FrameType.TRAILER].length > 0) {
-              var trailerString = '';
-              for (var pos = 0; pos < messages[i][FrameType.TRAILER].length;
+              let trailerString = '';
+              for (let pos = 0; pos < messages[i][FrameType.TRAILER].length;
                    pos++) {
                 trailerString +=
                     String.fromCharCode(messages[i][FrameType.TRAILER][pos]);
               }
-              var trailers = self.parseHttp1Headers_(trailerString);
-              var grpcStatusCode = StatusCode.OK;
-              var grpcStatusMessage = '';
+              const trailers = self.parseHttp1Headers_(trailerString);
+              let grpcStatusCode = StatusCode.OK;
+              let grpcStatusMessage = '';
               if (GRPC_STATUS in trailers) {
                 grpcStatusCode =
                     /** @type {!StatusCode} */ (Number(trailers[GRPC_STATUS]));
@@ -212,12 +225,20 @@ class GrpcWebClientReadableStream {
     });
 
     events.listen(this.xhr_, EventType.COMPLETE, function(e) {
-      var lastErrorCode = self.xhr_.getLastErrorCode();
-      var grpcStatusCode = StatusCode.UNKNOWN;
-      var grpcStatusMessage = '';
-      var initialMetadata = /** @type {!Metadata} */ ({});
+      const lastErrorCode = self.xhr_.getLastErrorCode();
+      let grpcStatusCode = StatusCode.UNKNOWN;
+      let grpcStatusMessage = '';
+      const initialMetadata = /** @type {!Metadata} */ ({});
 
-      var responseHeaders = self.xhr_.getResponseHeaders();
+      // Get response headers with lower case keys.
+      const rawResponseHeaders = self.xhr_.getResponseHeaders();
+      const responseHeaders = {};
+      for (const key in rawResponseHeaders) {
+        if (rawResponseHeaders.hasOwnProperty(key)) {
+          responseHeaders[key.toLowerCase()] = rawResponseHeaders[key];
+        }
+      }
+
       Object.keys(responseHeaders).forEach((header_) => {
         if (!(EXCLUDED_RESPONSE_HEADERS.includes(header_))) {
           initialMetadata[header_] = responseHeaders[header_];
@@ -226,6 +247,7 @@ class GrpcWebClientReadableStream {
       self.sendMetadataCallbacks_(initialMetadata);
 
       // There's an XHR level error
+      let xhrStatusCode = -1;
       if (lastErrorCode != ErrorCode.NO_ERROR) {
         switch (lastErrorCode) {
           case ErrorCode.ABORT:
@@ -235,7 +257,8 @@ class GrpcWebClientReadableStream {
             grpcStatusCode = StatusCode.DEADLINE_EXCEEDED;
             break;
           case ErrorCode.HTTP_ERROR:
-            grpcStatusCode = StatusCode.fromHttpStatus(self.xhr_.getStatus());
+            xhrStatusCode = self.xhr_.getStatus();
+            grpcStatusCode = StatusCode.fromHttpStatus(xhrStatusCode);
             break;
           default:
             grpcStatusCode = StatusCode.UNAVAILABLE;
@@ -243,19 +266,23 @@ class GrpcWebClientReadableStream {
         if (grpcStatusCode == StatusCode.ABORTED && self.aborted_) {
           return;
         }
-        self.handleError_(new RpcError(
-            grpcStatusCode, ErrorCode.getDebugMessage(lastErrorCode)));
+        let errorMessage = ErrorCode.getDebugMessage(lastErrorCode);
+        if (xhrStatusCode != -1) {
+          errorMessage += ', http status code: ' + xhrStatusCode;
+        }
+
+        self.handleError_(new RpcError(grpcStatusCode, errorMessage));
         return;
       }
 
-      var errorEmitted = false;
+      let errorEmitted = false;
 
       // Check whethere there are grpc specific response headers
       if (GRPC_STATUS in responseHeaders) {
         grpcStatusCode = /** @type {!StatusCode} */ (
-            Number(self.xhr_.getResponseHeader(GRPC_STATUS)));
+            Number(responseHeaders[GRPC_STATUS]));
         if (GRPC_STATUS_MESSAGE in responseHeaders) {
-          grpcStatusMessage = self.xhr_.getResponseHeader(GRPC_STATUS_MESSAGE);
+          grpcStatusMessage = responseHeaders[GRPC_STATUS_MESSAGE];
         }
         if (grpcStatusCode != StatusCode.OK) {
           self.handleError_(new RpcError(
@@ -348,10 +375,10 @@ class GrpcWebClientReadableStream {
    * @return {!Object} The header:value pairs
    */
   parseHttp1Headers_(str) {
-    var chunks = str.trim().split('\r\n');
-    var headers = {};
-    for (var i = 0; i < chunks.length; i++) {
-      var pos = chunks[i].indexOf(':');
+    const chunks = str.trim().split('\r\n');
+    const headers = {};
+    for (let i = 0; i < chunks.length; i++) {
+      const pos = chunks[i].indexOf(':');
       headers[chunks[i].substring(0, pos).trim()] =
           chunks[i].substring(pos + 1).trim();
     }
@@ -381,7 +408,7 @@ class GrpcWebClientReadableStream {
    * @param {!RESPONSE} data The data to send back
    */
   sendDataCallbacks_(data) {
-    for (var i = 0; i < this.onDataCallbacks_.length; i++) {
+    for (let i = 0; i < this.onDataCallbacks_.length; i++) {
       this.onDataCallbacks_[i](data);
     }
   }
@@ -391,7 +418,7 @@ class GrpcWebClientReadableStream {
    * @param {!Status} status The status to send back
    */
   sendStatusCallbacks_(status) {
-    for (var i = 0; i < this.onStatusCallbacks_.length; i++) {
+    for (let i = 0; i < this.onStatusCallbacks_.length; i++) {
       this.onStatusCallbacks_[i](status);
     }
   }
@@ -401,7 +428,7 @@ class GrpcWebClientReadableStream {
    * @param {!Metadata} metadata The metadata to send back
    */
   sendMetadataCallbacks_(metadata) {
-    for (var i = 0; i < this.onMetadataCallbacks_.length; i++) {
+    for (let i = 0; i < this.onMetadataCallbacks_.length; i++) {
       this.onMetadataCallbacks_[i](metadata);
     }
   }
@@ -411,7 +438,7 @@ class GrpcWebClientReadableStream {
    * @param {!RpcError} error The error to send back
    */
   sendErrorCallbacks_(error) {
-    for (var i = 0; i < this.onErrorCallbacks_.length; i++) {
+    for (let i = 0; i < this.onErrorCallbacks_.length; i++) {
       this.onErrorCallbacks_[i](error);
     }
   }
@@ -420,7 +447,7 @@ class GrpcWebClientReadableStream {
    * @private
    */
   sendEndCallbacks_() {
-    for (var i = 0; i < this.onEndCallbacks_.length; i++) {
+    for (let i = 0; i < this.onEndCallbacks_.length; i++) {
       this.onEndCallbacks_[i]();
     }
   }

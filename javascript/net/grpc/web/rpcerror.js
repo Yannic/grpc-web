@@ -40,10 +40,20 @@ class RpcError extends Error {
    */
   constructor(code, message, metadata = {}) {
     super(message);
-    /** @export {!StatusCode} */
+    /** @type {!StatusCode} */
     this.code = code;
-    /** @export {!Metadata} */
+    /** @type {!Metadata} */
     this.metadata = metadata;
+  }
+
+  /** @override */
+  toString() {
+    const status = StatusCode.statusCodeName(this.code) || String(this.code);
+    let out = `RpcError(${status})`;
+    if (this.message) {
+      out += ': ' + this.message;
+    }
+    return out;
   }
 }
 

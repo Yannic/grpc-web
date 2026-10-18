@@ -11,3 +11,6 @@ target
 .project
 .classpath
 .settings
+zig-out
+zig-cache
+.zig-cache

@@ -27,7 +27,6 @@
 set -e
 
 cd "$(dirname $(dirname "$0"))"
-NPM_BIN_PATH=$(npm bin)
 PROTRACTOR_BIN_PATH="./node_modules/protractor/bin"
 
 function cleanup () {
@@ -37,7 +36,7 @@ function cleanup () {
 
 # Start the local webserver.
 echo "Starting local HTP Server..."
-$NPM_BIN_PATH/gulp serve &
+npx gulp serve &
 serverPid=$!
 echo "Local HTTP Server started with PID $serverPid."
 
@@ -45,8 +44,8 @@ trap cleanup EXIT
 
 echo "Using Headless Chrome."
 # Updates Selenium Webdriver.
-echo "$PROTRACTOR_BIN_PATH/webdriver-manager update --versions.chrome=93.0.4577.63 --gecko=false"
-$PROTRACTOR_BIN_PATH/webdriver-manager update --versions.chrome=93.0.4577.63 --gecko=false
+echo "$PROTRACTOR_BIN_PATH/webdriver-manager update --versions.chrome=112.0.5615.165 --gecko=false"
+$PROTRACTOR_BIN_PATH/webdriver-manager update --versions.chrome=112.0.5615.165 --gecko=false
 
 # Run the tests using Protractor! (Protractor should run selenium automatically)
 $PROTRACTOR_BIN_PATH/protractor protractor.conf.js

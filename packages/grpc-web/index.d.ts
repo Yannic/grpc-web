@@ -3,11 +3,23 @@ declare module "grpc-web" {
   export interface Metadata { [s: string]: string; }
 
   export class AbstractClientBase {
+
+    /** @deprecated Use MethodDescriptor instead. */
+    static MethodInfo: new (...args: any[]) => any;
+  
     thenableCall<REQ, RESP> (
       method: string,
       request: REQ,
       metadata: Metadata,
-      methodDescriptor: MethodDescriptor<REQ, RESP>
+      methodDescriptor: MethodDescriptor<REQ, RESP>,
+      options?: PromiseCallOptions
+    ): Promise<RESP>;
+  
+    unaryCall<REQ, RESP>(
+      method: string,
+      request: REQ,
+      metadata: Metadata,
+      methodDescriptor: MethodDescriptor<REQ, RESP> 
     ): Promise<RESP>;
 
     rpcCall<REQ, RESP> (
@@ -64,8 +76,10 @@ declare module "grpc-web" {
       Promise<UnaryResponse<REQ, RESP>>): Promise<UnaryResponse<REQ, RESP>>;
   }
 
-  export class CallOptions {
-    constructor(options: { [index: string]: any; });
+  /** Options for gRPC-Web calls returning a Promise. */
+  export interface PromiseCallOptions {
+    /** An AbortSignal to abort the call. */
+    readonly signal?: AbortSignal;
   }
 
   export class MethodDescriptor<REQ, RESP> {
@@ -75,25 +89,13 @@ declare module "grpc-web" {
                 responseType: new (...args: unknown[]) => RESP,
                 requestSerializeFn: any,
                 responseDeserializeFn: any);
-    createRequest(requestMessage: REQ,
-                  metadata?: Metadata,
-                  callOptions?: CallOptions): Request<REQ, RESP>;
-    createUnaryResponse(responseMessage: RESP,
-                        metadata?: Metadata,
-                        status?: Status): UnaryResponse<REQ, RESP>;
     getName(): string;
-    getMethodType(): string;
-    getRequestMessageCtor(): new (...args: unknown[]) => REQ;
-    getResponseMessageCtor(): new (...args: unknown[]) => RESP;
-    getRequestSerializeFn(): any;
-    getResponseDeserializeFn(): any;
   }
 
   export class Request<REQ, RESP> {
     getRequestMessage(): REQ;
     getMethodDescriptor(): MethodDescriptor<REQ, RESP>;
     getMetadata(): Metadata;
-    getCallOptions(): CallOptions;
   }
 
   export class UnaryResponse<REQ, RESP> {
@@ -109,6 +111,11 @@ declare module "grpc-web" {
     withCredentials?: boolean;
     unaryInterceptors?: UnaryInterceptor<unknown, unknown>[];
     streamInterceptors?: StreamInterceptor<unknown, unknown>[];
+    /**
+     * Maximum allowed inbound message size in bytes. Defaults to 4 MB.
+     * Set to 0 to disable the limit.
+     */
+    maxReceiveMessageSize?: number;
   }
 
   export class GrpcWebClientBase extends AbstractClientBase {
@@ -121,6 +128,9 @@ declare module "grpc-web" {
     metadata: Metadata;
   }
 
+  /** @deprecated Use RpcError instead. */
+  export { RpcError as Error };
+
   export interface Status {
     code: number;
     details: string;
@@ -128,23 +138,23 @@ declare module "grpc-web" {
   }
 
   export enum StatusCode {
-    ABORTED,
-    ALREADY_EXISTS,
-    CANCELLED,
-    DATA_LOSS,
-    DEADLINE_EXCEEDED,
-    FAILED_PRECONDITION,
-    INTERNAL,
-    INVALID_ARGUMENT,
-    NOT_FOUND,
     OK,
-    OUT_OF_RANGE,
+    CANCELLED,
+    UNKNOWN,
+    INVALID_ARGUMENT,
+    DEADLINE_EXCEEDED,
+    NOT_FOUND,
+    ALREADY_EXISTS,
     PERMISSION_DENIED,
     RESOURCE_EXHAUSTED,
-    UNAUTHENTICATED,
-    UNAVAILABLE,
+    FAILED_PRECONDITION,
+    ABORTED,
+    OUT_OF_RANGE,
     UNIMPLEMENTED,
-    UNKNOWN,
+    INTERNAL,
+    UNAVAILABLE,
+    DATA_LOSS,
+    UNAUTHENTICATED,
   }
 
   export namespace MethodType {

@@ -18,6 +18,7 @@
 
 #include <google/protobuf/compiler/code_generator.h>
 #include <google/protobuf/compiler/plugin.h>
+#include <google/protobuf/compiler/plugin.pb.h>
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/descriptor.pb.h>
 #include <google/protobuf/io/printer.h>
@@ -29,6 +30,7 @@
 #include <string>
 
 using google::protobuf::Descriptor;
+using google::protobuf::Edition;
 using google::protobuf::EnumDescriptor;
 using google::protobuf::FieldDescriptor;
 using google::protobuf::FileDescriptor;
@@ -40,6 +42,7 @@ using google::protobuf::compiler::CodeGenerator;
 using google::protobuf::compiler::GeneratorContext;
 using google::protobuf::compiler::ParseGeneratorParameter;
 using google::protobuf::compiler::PluginMain;
+using google::protobuf::compiler::Version;
 using google::protobuf::io::Printer;
 using google::protobuf::io::ZeroCopyOutputStream;
 
@@ -76,6 +79,18 @@ const char* kKeyword[] = {
     "transient",  "try",          "typeof",     "var",     "void",
     "volatile",   "while",        "with",
 };
+
+// Edit the version here prior to release
+static const std::string GRPC_WEB_VERSION = "2.1.1";
+
+string GetProtocVersion(GeneratorContext* context) {
+  Version compiler_version;
+  context->GetCompilerVersion(&compiler_version);
+  return std::to_string(compiler_version.major()) + "." +
+         std::to_string(compiler_version.minor()) + "." +
+         std::to_string(compiler_version.patch()) +
+         compiler_version.suffix();
+}
 
 bool IsReserved(const string& ident) {
   for (size_t i = 0; i < sizeof(kKeyword) / sizeof(kKeyword[0]); i++) {
@@ -163,12 +178,18 @@ inline bool HasPrefixString(const string& str, const string& prefix) {
          str.compare(0, prefix.size(), prefix) == 0;
 }
 
+// Strips the given prefix from the string, as well as the remaining leading dot
+// if it exists.
 inline string StripPrefixString(const string& str, const string& prefix) {
-  if (HasPrefixString(str, prefix)) {
-    return str.substr(prefix.size());
-  } else {
+  if (!HasPrefixString(str, prefix)) {
     return str;
   }
+
+  string remaining_str = str.substr(prefix.size());
+  if (!remaining_str.empty() && remaining_str[0] == '.') {
+    remaining_str = remaining_str.substr(1);
+  }
+  return remaining_str;
 }
 
 inline bool HasSuffixString(const string& str, const string& suffix) {
@@ -264,11 +285,7 @@ string ModuleAlias(const string& filename) {
 }
 
 string JSMessageType(const Descriptor* desc, const FileDescriptor* file) {
-  string class_name;
-  class_name = StripPrefixString(desc->full_name(), desc->file()->package());
-  if (!class_name.empty() && class_name[0] == '.') {
-    class_name = class_name.substr(1);
-  }
+  string class_name = StripPrefixString(desc->full_name(), desc->file()->package());
   if (desc->file() == file) {
     // [for protobuf .d.ts files only] Do not add the module prefix for local
     // messages.
@@ -316,12 +333,10 @@ string JSElementType(const FieldDescriptor* desc, const FileDescriptor* file) {
       if (desc->enum_type()->file() == file) {
         // [for protobuf .d.ts files only] Do not add the module prefix for
         // local messages.
-        string enum_name =
-            StripPrefixString(desc->enum_type()->full_name(),
-                              desc->enum_type()->file()->package());
-        return StripPrefixString(enum_name, ".");
+        return StripPrefixString(desc->enum_type()->full_name(),
+                                 desc->enum_type()->file()->package());
       }
-      return ModuleAlias(desc->enum_type()->file()->name()) +
+      return ModuleAlias(desc->enum_type()->file()->name()) + "." +
              StripPrefixString(desc->enum_type()->full_name(),
                                desc->enum_type()->file()->package());
 
@@ -470,6 +485,26 @@ string GetBasename(string filename) {
   return basename;
 }
 
+//Adds $ suffix to reserved method names to avoid conflicts.
+static bool IsReservedMethodName(const std::string& name) {
+  static const std::unordered_set<std::string> reserved = {
+    "extension",
+    "jspbmessageid"
+  };
+
+  std::string lower_name = Lowercase(name);
+
+  return reserved.count(lower_name) > 0;
+}
+
+static std::string SafeAccessorName(const std::string& name) {
+  std::string result = name;
+  if (IsReservedMethodName(name)) {
+    result += "$";
+  }
+  return result;
+}
+
 // Finds all message types used in all services in the file. Return results as a
 // map of full names to descriptors to get sorted results and deterministic
 // build outputs.
@@ -541,15 +576,17 @@ void PrintES6Imports(Printer* printer, const FileDescriptor* file) {
 
   std::set<string> imports;
   for (const auto& entry : GetAllMessages(file)) {
-    const string& name = entry.second->file()->name();
-    string dep_filename = GetRootPath(file->name(), name) + StripProto(name);
+    const string& proto_filename = entry.second->file()->name();
+    string dep_filename = GetRootPath(file->name(), proto_filename) + StripProto(proto_filename);
     if (imports.find(dep_filename) != imports.end()) {
       continue;
     }
     imports.insert(dep_filename);
     // We need to give each cross-file import an alias.
-    printer->Print("import * as $alias$ from '$dep_filename$_pb';\n", "alias",
-                   ModuleAlias(name), "dep_filename", dep_filename);
+    printer->Print("import * as $alias$ from '$dep_filename$_pb'; // proto import: \"$proto_filename$\"\n",
+                   "alias", ModuleAlias(proto_filename),
+                   "dep_filename", dep_filename,
+                   "proto_filename", proto_filename);
   }
   printer->Print("\n\n");
 }
@@ -580,7 +617,7 @@ void PrintTypescriptFile(Printer* printer, const FileDescriptor* file,
     }
     printer->Print(vars,
                    "this.client_ = new grpcWeb.$mode$ClientBase(options);\n"
-                   "this.hostname_ = hostname;\n"
+                   "this.hostname_ = hostname.replace(/\\/+$$/, '');\n"
                    "this.credentials_ = credentials;\n"
                    "this.options_ = options;\n");
     printer->Outdent();
@@ -637,7 +674,7 @@ void PrintTypescriptFile(Printer* printer, const FileDescriptor* file,
           printer->Indent();
           printer->Print(vars,
                          "request: $input_type$,\n"
-                         "metadata: grpcWeb.Metadata | null): "
+                         "metadata?: grpcWeb.Metadata | null): "
                          "$promise$<$output_type$>;\n\n");
           printer->Outdent();
 
@@ -655,7 +692,7 @@ void PrintTypescriptFile(Printer* printer, const FileDescriptor* file,
           printer->Indent();
           printer->Print(vars,
                          "request: $input_type$,\n"
-                         "metadata: grpcWeb.Metadata | null,\n"
+                         "metadata?: grpcWeb.Metadata | null,\n"
                          "callback?: (err: grpcWeb.RpcError,\n"
                          "           response: $output_type$) => void) {\n");
           printer->Print(vars, "if (callback !== undefined) {\n");
@@ -762,7 +799,10 @@ void PrintProtoDtsEnum(Printer* printer, const EnumDescriptor* desc) {
   std::map<string, string> vars;
   vars["enum_name"] = desc->name();
 
-  printer->Print(vars, "export enum $enum_name$ { \n");
+  // Use regular enums for broad TypeScript compatibility. `const enum`
+  // triggers TS2748 when `verbatimModuleSyntax` is enabled (default in
+  // TypeScript 5.9+), so prefer `enum` here.
+  printer->Print(vars, "export enum $enum_name$ {\n");
   printer->Indent();
   for (int i = 0; i < desc->value_count(); i++) {
     vars["value_name"] = Uppercase(desc->value(i)->name());
@@ -778,7 +818,9 @@ void PrintProtoDtsOneofCase(Printer* printer, const OneofDescriptor* desc) {
   vars["oneof_name"] = ToUpperCamel(ParseLowerUnderscore(desc->name()));
   vars["oneof_name_upper"] = Uppercase(desc->name());
 
-  printer->Print(vars, "export enum $oneof_name$Case { \n");
+  // Oneof case enums also use regular enums to avoid ambient `const enum`
+  // issues under `verbatimModuleSyntax`.
+  printer->Print(vars, "export enum $oneof_name$Case {\n");
   printer->Indent();
   printer->Print(vars, "$oneof_name_upper$_NOT_SET = 0,\n");
   for (int i = 0; i < desc->field_count(); i++) {
@@ -799,9 +841,13 @@ void PrintProtoDtsMessage(Printer* printer, const Descriptor* desc,
 
   printer->Print(vars, "export class $class_name$ extends jspb.Message {\n");
   printer->Indent();
+
+  printer->Print(vars, "constructor();\n" "constructor(opt_data?: $class_name$.AsObject);\n");
+
   for (int i = 0; i < desc->field_count(); i++) {
     const FieldDescriptor* field = desc->field(i);
-    vars["js_field_name"] = JSFieldName(field);
+
+    vars["js_field_name"] = SafeAccessorName(JSFieldName(field));
     vars["js_field_type"] = JSFieldType(field, file);
     if (field->type() != FieldDescriptor::TYPE_MESSAGE ||
         field->is_repeated()) {
@@ -825,17 +871,16 @@ void PrintProtoDtsMessage(Printer* printer, const Descriptor* desc,
                      "set$js_field_name$(value?: $js_field_type$): "
                      "$class_name$;\n");
     }
-    if (field->has_optional_keyword() ||
-        (field->type() == FieldDescriptor::TYPE_MESSAGE &&
-            !field->is_repeated() && !field->is_map())) {
+    if (field->has_presence()) {
       printer->Print(vars, "has$js_field_name$(): boolean;\n");
     }
-    if (field->type() == FieldDescriptor::TYPE_MESSAGE || field->has_optional_keyword() ||
-        field->is_repeated() || field->is_map()) {
+    if (field->type() == FieldDescriptor::TYPE_MESSAGE ||
+        field->has_presence() || field->is_repeated() || field->is_map()) {
       printer->Print(vars, "clear$js_field_name$(): $class_name$;\n");
     }
     if (field->is_repeated() && !field->is_map()) {
-      vars["js_field_name"] = JSElementName(field);
+
+      vars["js_field_name"] = SafeAccessorName(JSElementName(field));
       vars["js_field_type"] = JSElementType(field, file);
       if (field->type() != FieldDescriptor::TYPE_MESSAGE) {
         printer->Print(vars,
@@ -851,14 +896,12 @@ void PrintProtoDtsMessage(Printer* printer, const Descriptor* desc,
     printer->Print("\n");
   }
 
-  for (int i = 0; i < desc->oneof_decl_count(); i++) {
-    const OneofDescriptor* oneof = desc->oneof_decl(i);
-    if (!oneof->is_synthetic()) {
-      vars["js_oneof_name"] = ToUpperCamel(ParseLowerUnderscore(oneof->name()));
-      printer->Print(
-          vars, "get$js_oneof_name$Case(): $class_name$.$js_oneof_name$Case;\n");
-      printer->Print("\n");
-    }
+  for (int i = 0; i < desc->real_oneof_decl_count(); i++) {
+    const OneofDescriptor *oneof = desc->real_oneof_decl(i);
+    vars["js_oneof_name"] = ToUpperCamel(ParseLowerUnderscore(oneof->name()));
+    printer->Print(
+        vars, "get$js_oneof_name$Case(): $class_name$.$js_oneof_name$Case;\n");
+    printer->Print("\n");
   }
 
   printer->Print(
@@ -882,21 +925,22 @@ void PrintProtoDtsMessage(Printer* printer, const Descriptor* desc,
   printer->Indent();
   for (int i = 0; i < desc->field_count(); i++) {
     const FieldDescriptor* field = desc->field(i);
+
     string js_field_name = CamelCaseJSFieldName(field);
     if (IsReserved(js_field_name)) {
       js_field_name = "pb_" + js_field_name;
     }
+
     vars["js_field_name"] = js_field_name;
     vars["js_field_type"] = AsObjectFieldType(field, file);
-    if ((field->type() != FieldDescriptor::TYPE_MESSAGE && !field->has_optional_keyword()) ||
-        field->is_repeated()) {
-      printer->Print(vars, "$js_field_name$: $js_field_type$,\n");
+    if (!field->has_presence()) {
+      printer->Print(vars, "$js_field_name$: $js_field_type$;\n");
     } else {
-      printer->Print(vars, "$js_field_name$?: $js_field_type$,\n");
+      printer->Print(vars, "$js_field_name$?: $js_field_type$;\n");
     }
   }
   printer->Outdent();
-  printer->Print("}\n");
+  printer->Print("};\n");
 
   for (int i = 0; i < desc->nested_type_count(); i++) {
     if (desc->nested_type(i)->options().map_entry()) {
@@ -924,11 +968,12 @@ void PrintProtoDtsFile(Printer* printer, const FileDescriptor* file) {
   printer->Print("import * as jspb from 'google-protobuf'\n\n");
 
   for (int i = 0; i < file->dependency_count(); i++) {
-    const string& name = file->dependency(i)->name();
+    const string& proto_filename = file->dependency(i)->name();
     // We need to give each cross-file import an alias.
-    printer->Print("import * as $alias$ from '$dep_filename$_pb';\n", "alias",
-                   ModuleAlias(name), "dep_filename",
-                   GetRootPath(file->name(), name) + StripProto(name));
+    printer->Print("import * as $alias$ from '$dep_filename$_pb'; // proto import: \"$proto_filename$\"\n",
+                   "alias", ModuleAlias(proto_filename),
+                   "dep_filename", GetRootPath(file->name(), proto_filename) + StripProto(proto_filename),
+                   "proto_filename", proto_filename);
   }
   printer->Print("\n\n");
 
@@ -949,7 +994,11 @@ void PrintFileHeader(Printer* printer, const std::map<string, string>& vars) {
       " * @enhanceable\n"
       " * @public\n"
       " */\n\n"
-      "// GENERATED CODE -- DO NOT EDIT!\n\n\n"
+      "// Code generated by protoc-gen-grpc-web. DO NOT EDIT.\n"
+      "// versions:\n"
+      "// \tprotoc-gen-grpc-web v$version$\n"
+      "// \tprotoc              v$protoc_version$\n"
+      "// source: $source_file$\n\n\n"
       "/* eslint-disable */\n"
       "// @ts-nocheck\n\n\n");
 }
@@ -966,7 +1015,11 @@ void PrintMethodDescriptorFile(Printer* printer,
   printer->Print(
       " * @public\n"
       " */\n\n"
-      "// GENERATED CODE -- DO NOT EDIT!\n\n\n"
+      "// Code generated by protoc-gen-grpc-web. DO NOT EDIT.\n"
+      "// versions:\n"
+      "// \tprotoc-gen-grpc-web v$version$\n"
+      "// \tprotoc              v$protoc_version$\n"
+      "// source: $source_file$\n\n\n"
       "/* eslint-disable */\n"
       "// @ts-nocheck\n\n\n");
 
@@ -1060,11 +1113,11 @@ void PrintServiceConstructor(Printer* printer, std::map<string, string> vars,
         "   */\n"
         "  this.client_ = new grpc.web.$mode$ClientBase(options);\n\n");
   }
-  printer->Print(vars,
+  printer->PrintRaw(
                  "  /**\n"
                  "   * @private @const {string} The hostname\n"
                  "   */\n"
-                 "  this.hostname_ = hostname;\n\n"
+                 "  this.hostname_ = hostname.replace(/\\/+$/, '');\n\n"
                  "};\n\n\n");
 }
 
@@ -1361,11 +1414,15 @@ void PrintGrpcWebClosureES6File(Printer* printer, const FileDescriptor* file) {
   string package_dot = file->package().empty() ? "" : file->package() + ".";
 
   printer->Print(
-      "// GENERATED CODE -- DO NOT EDIT!\n"
-      "\n"
       "/**\n"
       " * @fileoverview gRPC-Web generated client stub for '$file$'\n"
       " */\n"
+      "\n"
+      "// Code generated by protoc-gen-grpc-web. DO NOT EDIT.\n"
+      "// versions:\n"
+      "// \tprotoc-gen-grpc-web v$version$\n"
+      "// \tprotoc              v$protoc_version$\n"
+      "// source: $source_file$\n"
       "\n"
       "\n",
       "file", file->name());
@@ -1498,8 +1555,12 @@ class GrpcCodeGenerator : public CodeGenerator {
 
   uint64_t GetSupportedFeatures() const override {
     // Code generators must explicitly support proto3 optional.
-    return CodeGenerator::FEATURE_PROTO3_OPTIONAL;
+    return CodeGenerator::FEATURE_PROTO3_OPTIONAL | CodeGenerator::FEATURE_SUPPORTS_EDITIONS;
   }
+
+  // Keep synced with protoc-gen-js: https://github.com/protocolbuffers/protobuf-javascript/blob/861c8020a5c0cba9b7cdf915dffde96a4421a1f4/generator/js_generator.h#L157-L158
+  Edition GetMinimumEdition() const override { return Edition::EDITION_PROTO2; }
+  Edition GetMaximumEdition() const override { return Edition::EDITION_2024; }
 
   bool Generate(const FileDescriptor* file, const string& parameter,
                 GeneratorContext* context, string* error) const override {
@@ -1548,6 +1609,10 @@ class GrpcCodeGenerator : public CodeGenerator {
       // No services, nothing to do.
       return true;
     }
+
+    vars["version"]        = GRPC_WEB_VERSION;
+    vars["protoc_version"] = GetProtocVersion(context);
+    vars["source_file"]    = file->name();
 
     string file_name = generator_options.OutputFile(file->name());
     if (generator_options.multiple_files() &&
@@ -1712,6 +1777,11 @@ class GrpcCodeGenerator : public CodeGenerator {
 }  // namespace grpc
 
 int main(int argc, char* argv[]) {
+  if (argc == 2 && std::string(argv[1]) == "--version") {
+    std::cout << argv[0] << " " << grpc::web::GRPC_WEB_VERSION << std::endl;
+    return 0;
+  }
+
   grpc::web::GrpcCodeGenerator generator;
   PluginMain(argc, argv, &generator);
   return 0;

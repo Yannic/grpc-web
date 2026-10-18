@@ -1,0 +1,10 @@
+# Common build settings for unix-like systems
+build --copt=-Wno-error=deprecated-declarations
+build --host_copt=-Wno-error=deprecated-declarations
+
+# Required until this is the default; expected in Bazel 7
+common --enable_bzlmod
+
+# Per-user settings (gitignored). Keep last so local flags can override.
+# Docs: https://bazel.build/configure/best-practices#bazelrc
+try-import %workspace%/.bazelrc.user

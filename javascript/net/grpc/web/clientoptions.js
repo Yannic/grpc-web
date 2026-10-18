@@ -5,7 +5,7 @@ const {StreamInterceptor, UnaryInterceptor} = goog.require('grpc.web.Interceptor
 
 
 /**
- * Options that are availavle during the client construction.
+ * Options that are available during the client construction.
  * @record
  */
 class ClientOptions {
@@ -23,6 +23,15 @@ class ClientOptions {
      * @type {boolean|undefined}
      */
     this.withCredentials;
+
+    /**
+     * The maximum allowed length, in bytes, of a single inbound message.
+     * Defaults to 4 MB (matching grpc-go, grpc-java and the C core). A value
+     * of 0 disables the limit. The stream parser rejects a frame whose
+     * declared length exceeds this before allocating a receive buffer.
+     * @type {number|undefined}
+     */
+    this.maxReceiveMessageSize;
 
     /**
      * Unary interceptors. Note that they are only available in grpcweb and

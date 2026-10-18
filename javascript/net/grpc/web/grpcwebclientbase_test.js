@@ -19,6 +19,7 @@ goog.module('grpc.web.GrpcWebClientBaseTest');
 goog.setTestOnly('grpc.web.GrpcWebClientBaseTest');
 
 const ClientReadableStream = goog.require('grpc.web.ClientReadableStream');
+const ErrorCode = goog.require('goog.net.ErrorCode');
 const GrpcWebClientBase = goog.require('grpc.web.GrpcWebClientBase');
 const MethodDescriptor = goog.require('grpc.web.MethodDescriptor');
 const ReadyState = goog.require('goog.net.XmlHttp.ReadyState');
@@ -75,6 +76,129 @@ testSuite({
     assertElementsEquals(DEFAULT_UNARY_HEADER_VALUES, Object.values(headers));
   },
 
+  async testRpcFalsyResponse_ForNonProtobufDescriptor() {
+    const xhr = new XhrIo();
+    const client = new GrpcWebClientBase(/* options= */ {}, xhr);
+    const methodDescriptor = createMethodDescriptor((bytes) => {
+      assertElementsEquals(DEFAULT_RPC_RESPONSE_DATA, [].slice.call(bytes));
+      return 0;
+    });
+
+    const response = await new Promise((resolve, reject) => {
+      client.rpcCall(
+          'url', new MockRequest(), /* metadata= */ {}, methodDescriptor,
+          (error, response) => {
+            assertNull(error);
+            resolve(response);
+          });
+      xhr.simulatePartialResponse(
+          googCrypt.encodeByteArray(new Uint8Array(DEFAULT_RPC_RESPONSE)),
+          DEFAULT_RESPONSE_HEADERS);
+      xhr.simulateReadyStateChange(ReadyState.COMPLETE);
+    });
+
+    assertEquals(0, response);
+    const headers = /** @type {!Object} */ (xhr.getLastRequestHeaders());
+    assertElementsEquals(DEFAULT_UNARY_HEADERS, Object.keys(headers));
+    assertElementsEquals(DEFAULT_UNARY_HEADER_VALUES, Object.values(headers));
+  },
+
+  async testRpcResponseThenableCall() {
+    const xhr = new XhrIo();
+    const client = new GrpcWebClientBase(/* options= */ {}, xhr);
+    const methodDescriptor = createMethodDescriptor((bytes) => {
+      assertElementsEquals(DEFAULT_RPC_RESPONSE_DATA, [].slice.call(bytes));
+      return new MockReply('value');
+    });
+
+    const responsePromise = client.thenableCall(
+      'url', new MockRequest(), /* metadata= */ {}, methodDescriptor);
+    xhr.simulatePartialResponse(
+        googCrypt.encodeByteArray(new Uint8Array(DEFAULT_RPC_RESPONSE)),
+        DEFAULT_RESPONSE_HEADERS);
+    xhr.simulateReadyStateChange(ReadyState.COMPLETE);
+    const response = await responsePromise;
+
+    assertEquals('value', /** @type {!MockReply} */ (response).data);
+    const headers = /** @type {!Object} */ (xhr.getLastRequestHeaders());
+    assertElementsEquals(DEFAULT_UNARY_HEADERS, Object.keys(headers));
+    assertElementsEquals(DEFAULT_UNARY_HEADER_VALUES, Object.values(headers));
+  },
+
+  async testRpcFalsyResponseThenableCall_ForNonProtobufDescriptor() {
+    const xhr = new XhrIo();
+    const client = new GrpcWebClientBase(/* options= */ {}, xhr);
+    const methodDescriptor = createMethodDescriptor((bytes) => {
+      assertElementsEquals(DEFAULT_RPC_RESPONSE_DATA, [].slice.call(bytes));
+      return 0;
+    });
+
+    const responsePromise = client.thenableCall(
+      'url', new MockRequest(), /* metadata= */ {}, methodDescriptor);
+    xhr.simulatePartialResponse(
+        googCrypt.encodeByteArray(new Uint8Array(DEFAULT_RPC_RESPONSE)),
+        DEFAULT_RESPONSE_HEADERS);
+    xhr.simulateReadyStateChange(ReadyState.COMPLETE);
+    const response = await responsePromise;
+
+    assertEquals(0, response);
+    const headers = /** @type {!Object} */ (xhr.getLastRequestHeaders());
+    assertElementsEquals(DEFAULT_UNARY_HEADERS, Object.keys(headers));
+    assertElementsEquals(DEFAULT_UNARY_HEADER_VALUES, Object.values(headers));
+  },
+
+
+  async testCancelledThenableCall() {
+    const xhr = new XhrIo();
+    const client = new GrpcWebClientBase(/* options= */ {}, xhr);
+    const methodDescriptor = createMethodDescriptor((bytes) => {
+      assertElementsEquals(DEFAULT_RPC_RESPONSE_DATA, [].slice.call(bytes));
+      return 0;
+    });
+
+    const abortController = new AbortController();
+    const signal = abortController.signal;
+    const responsePromise = client.thenableCall(
+        'url', new MockRequest(), /* metadata= */ {}, methodDescriptor,
+        {signal});
+    abortController.abort();
+
+    const error = await assertRejects(responsePromise);
+    assertTrue(error instanceof RpcError);
+    assertEquals(StatusCode.CANCELLED, /** @type {!RpcError} */ (error).code);
+    assertEquals('Aborted', /** @type {!RpcError} */ (error).message);
+    // Default abort reason if none provided.
+    const cause = /** @type {!RpcError} */ (error).cause;
+    assertTrue(cause instanceof Error);
+    assertEquals('AbortError', /** @type {!Error} */ (cause).name);
+    assertEquals(ErrorCode.ABORT, xhr.getLastErrorCode());
+  },
+
+  async testCancelledThenableCallWithReason() {
+    const xhr = new XhrIo();
+    const client = new GrpcWebClientBase(/* options= */ {}, xhr);
+    const methodDescriptor = createMethodDescriptor((bytes) => {
+      assertElementsEquals(DEFAULT_RPC_RESPONSE_DATA, [].slice.call(bytes));
+      return 0;
+    });
+
+    const abortController = new AbortController();
+    const signal = abortController.signal;
+    const responsePromise = client.thenableCall(
+        'url', new MockRequest(), /* metadata= */ {}, methodDescriptor,
+        {signal});
+    abortController.abort('cancelling');
+
+    const error = await assertRejects(responsePromise);
+    assertTrue(error instanceof RpcError);
+    assertEquals(StatusCode.CANCELLED, /** @type {!RpcError} */ (error).code);
+    assertEquals('Aborted', /** @type {!RpcError} */ (error).message);
+    // Abort reason forwarded as cause.
+    const cause = /** @type {!RpcError} */ (error).cause;
+    assertEquals('cancelling', cause);
+    assertEquals(ErrorCode.ABORT, xhr.getLastErrorCode());
+  },
+
   async testDeadline() {
     const xhr = new XhrIo();
     const client = new GrpcWebClientBase(/* options= */ {}, xhr);
@@ -84,8 +208,8 @@ testSuite({
     deadline.setSeconds(deadline.getSeconds() + 1);
     await new Promise((resolve, reject) => {
       client.rpcCall(
-          'url', new MockRequest(), {'deadline': deadline}, methodDescriptor,
-          (error, response) => {
+          'url', new MockRequest(), {'deadline': deadline.getTime().toString()},
+          methodDescriptor, (error, response) => {
             assertNull(error);
             resolve();
           });
@@ -223,8 +347,18 @@ class MockReply {
 }
 
 /**
- * @param {function(string): !MockReply} responseDeSerializeFn
- * @return {!MethodDescriptor<!MockRequest, !MockReply>}
+ * Typedef for allowed response types.
+ *
+ * Number is allowed specifically for supporting falsy responses `0`, see:
+ * https://github.com/grpc/grpc-web/pull/1025
+ *
+ * @typedef {!MockReply|number}
+ */
+let AllowedResponseType;
+
+/**
+ * @param {function(string): !AllowedResponseType} responseDeSerializeFn
+ * @return {!MethodDescriptor<!MockRequest, !AllowedResponseType>}
  */
 function createMethodDescriptor(responseDeSerializeFn) {
   return new MethodDescriptor(

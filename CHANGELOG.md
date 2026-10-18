@@ -1,6 +1,93 @@
 [//]: # (GENERATED FILE -- DO NOT EDIT!)
 [//]: # (See scripts/release_notes.py for more details.)
 
+## 2.1.1
+
+### Security
+
+- [#1547](https://github.com/grpc/grpc-web/pull/1547) limit maxReceiveMessageSize to 4MB to have parity with other runtimes @mbissa 
+
+### Other Changes
+
+- [#1548](https://github.com/grpc/grpc-web/pull/1548) fix(docker): resolve grpcwebproxy build failure caused by dead vanity ... @Vuhag123
+- [#1545](https://github.com/grpc/grpc-web/pull/1545) chore: upgrade macOS CI to macos-14 and prune unused rollup-plugin-cop... @Vuhag123
+
+## 2.1.0
+
+### Major Features
+
+- [#1534](https://github.com/grpc/grpc-web/pull/1534) TypeScript Migration: Core Library and Build Setup @Vuhag123
+- [#1529](https://github.com/grpc/grpc-web/pull/1529) Add support for edition 2024 @beatrausch
+
+### Other Changes
+
+- [#1526](https://github.com/grpc/grpc-web/pull/1526) chore: bump bazel modules @loeffel-io
+- [#1523](https://github.com/grpc/grpc-web/pull/1523) Bump webpack from 5.101.3 to 5.104.1 in /net/grpc/gateway/examples/ech... @dependabot[bot]
+- [#1521](https://github.com/grpc/grpc-web/pull/1521) fix-944 - Added unary Call in abstractclientbase. @Vuhag123
+- [#1515](https://github.com/grpc/grpc-web/pull/1515) Fix 1097 - typescript: add missing constructor definition in generated... @Vuhag123
+- [#1514](https://github.com/grpc/grpc-web/pull/1514) missing symbol $ in get/set functions in TypeScript output of grpc-web @Vuhag123##
+
+## 2.0.2
+
+- [#1507](https://github.com/grpc/grpc-web/pull/1507) Use regular enums for compatibility with TypeScript 5.9+
+
+## 2.0.1
+
+- [#1501](https://github.com/grpc/grpc-web/pull/1501) Update workflow to use Ubuntu 22.04 and static link libstdc++/libgcc
+
+## 2.0.0
+
+### Major Features
+
+- [#1490](https://github.com/grpc/grpc-web/pull/1490) Enable support for Editions in protoc-gen-grpc-web. @Quarke
+- [#1445](https://github.com/grpc/grpc-web/pull/1445) Upgrade protobuf to 27.1 and modernize codegen using new APIs @benjaminp
+
+### Other Changes
+
+- [#1496](https://github.com/grpc/grpc-web/pull/1496) Rework release workflows using Github runners (replacing Zig)
+- [#1494](https://github.com/grpc/grpc-web/pull/1494) Updates Closure compiler (`20250820.0.0`) and library
+- [#1463](https://github.com/grpc/grpc-web/pull/1463) fix: format of typescript definition @nnnnoel
+- [#1456](https://github.com/grpc/grpc-web/pull/1456) Bazel bzlmod support for grpc-web. @gonzojive
+- [#1452](https://github.com/grpc/grpc-web/pull/1452) Update protobuf-JS `3.14.0` -> `3.21.4`
+- [#1441](https://github.com/grpc/grpc-web/pull/1441) Upgrade to Bazel 6.5.0
+
+## 1.5.0
+
+- [#1369](https://github.com/grpc/grpc-web/pull/1369) (Typescript) Mark some `metadata` parameters as optional @andrewmbenton
+- [#1335](https://github.com/grpc/grpc-web/pull/1335) Update Debian (and other deps) and remove Java In-process Proxy
+- [#1334](https://github.com/grpc/grpc-web/pull/1334) Allow mixed-case headers
+- [#1330](https://github.com/grpc/grpc-web/pull/1330) Update ES6 .d.ts imports with comment about corresponding proto import... @gonzojive
+- [#1313](https://github.com/grpc/grpc-web/pull/1313) Update ES6 imports with comment about corresponding proto import path. @reddaly
+
+## 1.4.2
+
+- [#1289](https://github.com/grpc/grpc-web/pull/1289) Expose getName() in MethodDescriptor and fix TS definitions.
+- [#1230](https://github.com/grpc/grpc-web/pull/1230) GrpcWebClientReadableStream: keep falsy data @pro-wh
+
+## 1.4.1
+
+- [#1286](https://github.com/grpc/grpc-web/pull/1286) Fix duplicate dot in enum name (when "package" is specified)
+
+## 1.4.0
+
+### Major Features
+
+- [#1249](https://github.com/grpc/grpc-web/pull/1249) Use Zig to build aarch64 binaries @hronro
+- [#1203](https://github.com/grpc/grpc-web/pull/1203) Github Actions (workflows) for building `protoc-gen-grpc-web` plugins
+
+### Other Changes
+
+- [#1279](https://github.com/grpc/grpc-web/pull/1279) Fixes the status codes ordering in typescript definitions @chandraaditya
+- [#1278](https://github.com/grpc/grpc-web/pull/1278) Fix Enum with module in generated TS interface.
+- [#1254](https://github.com/grpc/grpc-web/pull/1254) Remove Trailing Slashes from Hostname @jkjk822
+- [#1252](https://github.com/grpc/grpc-web/pull/1252) Fix Zig setup step in CI @hronro
+- [#1231](https://github.com/grpc/grpc-web/pull/1231) Add version flag and version info in generated code @meling
+- [#1225](https://github.com/grpc/grpc-web/pull/1225) Improve error message & Internal code sync
+- [#1222](https://github.com/grpc/grpc-web/pull/1222) Update envoy version to 1.22 (with config updates) @tomk9
+- [#1211](https://github.com/grpc/grpc-web/pull/1211) Upgrade protobuf and grpc deps @aapeliv
+- [#1199](https://github.com/grpc/grpc-web/pull/1199) Revert "Expose MethodDescriptor's public methods"
+
+
 ## 1.3.1
 
 - [#1184](https://github.com/grpc/grpc-web/pull/1184) Correctly support proto3 optional fields in commonjs+dts .d.ts output @mattnathan

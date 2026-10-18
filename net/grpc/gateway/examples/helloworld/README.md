@@ -95,48 +95,59 @@ cluster at port `:9090`.
 ```yaml
 static_resources:
   listeners:
-  - name: listener_0
-    address:
-      socket_address: { address: 0.0.0.0, port_value: 8080 }
-    filter_chains:
-    - filters:
-      - name: envoy.filters.network.http_connection_manager
-        typed_config:
-          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
-          codec_type: auto
-          stat_prefix: ingress_http
-          route_config:
-            name: local_route
-            virtual_hosts:
-            - name: local_service
-              domains: ["*"]
-              routes:
-              - match: { prefix: "/" }
-                route:
-                  cluster: greeter_service
-                  max_stream_duration:
-                    grpc_timeout_header_max: 0s
-              cors:
-                allow_origin_string_match:
-                - prefix: "*"
-                allow_methods: GET, PUT, DELETE, POST, OPTIONS
-                allow_headers: keep-alive,user-agent,cache-control,content-type,content-transfer-encoding,custom-header-1,x-accept-content-transfer-encoding,x-accept-response-streaming,x-user-agent,x-grpc-web,grpc-timeout
-                max_age: "1728000"
-                expose_headers: custom-header-1,grpc-status,grpc-message
-          http_filters:
-          - name: envoy.filters.http.grpc_web
-          - name: envoy.filters.http.cors
-          - name: envoy.filters.http.router
+    - name: listener_0
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8080 }
+      filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              codec_type: auto
+              stat_prefix: ingress_http
+              route_config:
+                name: local_route
+                virtual_hosts:
+                  - name: local_service
+                    domains: ["*"]
+                    routes:
+                      - match: { prefix: "/" }
+                        route:
+                          cluster: greeter_service
+                          max_stream_duration:
+                            grpc_timeout_header_max: 0s
+                    cors:
+                      allow_origin_string_match:
+                        - prefix: "*"
+                      allow_methods: GET, PUT, DELETE, POST, OPTIONS
+                      allow_headers: keep-alive,user-agent,cache-control,content-type,content-transfer-encoding,custom-header-1,x-accept-content-transfer-encoding,x-accept-response-streaming,x-user-agent,x-grpc-web,grpc-timeout
+                      max_age: "1728000"
+                      expose_headers: custom-header-1,grpc-status,grpc-message
+              http_filters:
+                - name: envoy.filters.http.grpc_web
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_web.v3.GrpcWeb
+                - name: envoy.filters.http.cors
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+                - name: envoy.filters.http.router
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
   clusters:
-  - name: greeter_service
-    connect_timeout: 0.25s
-    type: logical_dns
-    http2_protocol_options: {}
-    lb_policy: round_robin
-    load_assignment:
-      cluster_name: cluster_0
-      endpoints:
-        - lb_endpoints:
+    - name: greeter_service
+      connect_timeout: 0.25s
+      type: logical_dns
+      # HTTP/2 support
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      lb_policy: round_robin
+      load_assignment:
+        cluster_name: cluster_0
+        endpoints:
+          - lb_endpoints:
             - endpoint:
                 address:
                   socket_address:
@@ -153,12 +164,24 @@ static_resources:
 >         address: host.docker.internal
 > ```
 >
-> or if your version of Docker on Mac older then v18.03.0, change it to:
+> or if your version of Docker on Mac is older than v18.03.0, change it to:
 >
 > ```yaml
 >     ...
 >     socket_address:
 >         address: docker.for.mac.localhost
+> ```
+
+> NOTE: As per
+> [Envoy - Envoy Networking](ttps://www.envoyproxy.io/docs/envoy/latest/start/quick-start/run-envoy#envoy-networking),
+> if your environment does not enable IPv6, enable only IPv4 in the cluster
+> by adding the `dns_lookup_family: V4_ONLY` field:
+>
+> ```yaml
+>     ...
+>     clusters:
+>       - name: greeter_service
+>       dns_lookup_family: V4_ONLY
 > ```
 
 ## Write Client Code
@@ -201,11 +224,11 @@ the `client.js` files.
     "@grpc/grpc-js": "~1.0.5",
     "@grpc/proto-loader": "~0.5.4",
     "async": "~1.5.2",
-    "google-protobuf": "~3.14.0",
-    "grpc-web": "~1.3.1",
+    "google-protobuf": "~3.21.4",
+    "grpc-web": "~2.1.1",
     "lodash": "~4.17.0",
-    "webpack": "~4.43.0",
-    "webpack-cli": "~3.3.11"
+    "webpack": "~5.82.1",
+    "webpack-cli": "~5.1.1"
   }
 }
 ```
@@ -234,30 +257,21 @@ And that's it! We have all the code ready. Let's run the example!
 
 ## Generate Protobuf Messages and Client Service Stub
 
+### Install Plugins
+
 To generate the protobuf messages and client service stub class from your
 `.proto` definitions, we need:
  - the `protoc` binary, _and_
+ - the `protoc-gen-js` binary, _and_
  - the `protoc-gen-grpc-web` plugin.
 
-> You can download the `protoc-gen-grpc-web` protoc plugin from our
-> [release](https://github.com/grpc/grpc-web/releases) page.
->
-> If you don't already have `protoc` installed, you will have to download it
-> first from [here](https://github.com/protocolbuffers/protobuf/releases).
->
-> Make sure they are both executable and are discoverable from your PATH.
->
-> For example, in MacOS, you can do:
->
-> ```sh
-> $ sudo mv ~/Downloads/protoc-gen-grpc-web-1.3.1-darwin-x86_64 \
->   /usr/local/bin/protoc-gen-grpc-web
-> $ sudo chmod +x /usr/local/bin/protoc-gen-grpc-web
-> ```
+Follow the instructions [here](https://github.com/grpc/grpc-web?tab=readme-ov-file#code-generator-plugins)
+if you don't have them installed already.
 
+### Generating stubs
 
-When you have both `protoc` and `protoc-gen-grpc-web` installed, you can now
-run this command:
+When you have both `protoc`, `protoc-gen-js`, and `protoc-gen-grpc-web`
+installed, you can now run this command:
 
 ```sh
 $ protoc -I=. helloworld.proto \
@@ -282,7 +296,7 @@ can be consumed by the browser.
 
 ```sh
 $ npm install
-$ npx webpack client.js
+$ npx webpack ./client.js
 ```
 
 Here we use `webpack` and give it an entry point `client.js`. You can also use
@@ -307,7 +321,7 @@ run the 3 processes all in the background.
 
  ```sh
  $ docker run -d -v "$(pwd)"/envoy.yaml:/etc/envoy/envoy.yaml:ro \
-     --network=host envoyproxy/envoy:v1.20.0
+     --network=host envoyproxy/envoy:v1.22.0
  ```
 
 > NOTE: As per [this issue](https://github.com/grpc/grpc-web/issues/436):
@@ -315,7 +329,7 @@ run the 3 processes all in the background.
 >
 > ```sh
 > $ docker run -d -v "$(pwd)"/envoy.yaml:/etc/envoy/envoy.yaml:ro \
->     -p 8080:8080 -p 9901:9901 envoyproxy/envoy:v1.20.0
+>     -p 8080:8080 -p 9901:9901 envoyproxy/envoy:v1.22.0
 >  ```
 
  3. Run the simple Web Server. This hosts the static file `index.html` and

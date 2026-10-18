@@ -18,11 +18,11 @@
 ######################################
 # Stage 1: Fetch binaries
 ######################################
-# node:... Docker image is based on buildpack-deps:stretch
-FROM buildpack-deps:stretch AS prepare
+# node:... Docker image is based on buildpack-deps:bullseye (11)
+FROM buildpack-deps:bullseye AS prepare
 
 ARG BUILDIFIER_VERSION=1.0.0
-ARG PROTOBUF_VERSION=3.17.3
+ARG PROTOBUF_VERSION=3.19.4
 
 RUN apt-get -qq update && apt-get -qq install -y curl unzip
 
@@ -45,14 +45,15 @@ RUN git clone https://github.com/grpc/grpc-web .
 COPY ./scripts/init_submodules.sh ./scripts/
 RUN ./scripts/init_submodules.sh
 
-
 ######################################
 # Stage 2: Copy source files and build
 ######################################
-FROM node:12.22.6-stretch AS copy-and-build
+FROM node:20.0.0-bullseye AS copy-and-build
 
 ARG MAKEFLAGS=-j8
-ARG BAZEL_VERSION=4.1.0
+ARG BAZEL_VERSION=7.3.0
+
+RUN apt-get -qq update && apt-get -qq install -y python
 
 RUN mkdir -p /var/www/html/dist
 RUN echo "\nloglevel=error\n" >> $HOME/.npmrc
@@ -72,8 +73,13 @@ WORKDIR /github/grpc-web
 
 # Copy only files necessary to build the protoc-gen-grpc-web first as an optimization because they
 # are rarely updated compared with the javascript files.
-COPY ./WORKSPACE ./WORKSPACE
+COPY ./MODULE.bazel ./MODULE.bazel
+COPY ./MODULE.bazel.lock ./MODULE.bazel.lock
+COPY ./.bazelrc ./.bazelrc
 COPY ./javascript/net/grpc/web/generator javascript/net/grpc/web/generator
+
+# Pre-build the protobuf compiler lib so the following plugin build can reuse Bazel cache.
+RUN bazel build "@com_google_protobuf//:protoc_lib"
 
 RUN bazel build javascript/net/grpc/web/generator:protoc-gen-grpc-web && \
   cp $(bazel info bazel-genfiles)/javascript/net/grpc/web/generator/protoc-gen-grpc-web \
@@ -81,9 +87,19 @@ RUN bazel build javascript/net/grpc/web/generator:protoc-gen-grpc-web && \
 
 COPY ./javascript ./javascript
 COPY ./packages ./packages
+COPY ./src ./src
 
-RUN cd ./packages/grpc-web && \
-  npm install && \
+RUN mkdir -p ./src/typescript/generated && \
+    protoc -I=./src/typescript/proto -I=/usr/local/include \
+    ./src/typescript/proto/status.proto \
+    --js_out=import_style=commonjs:./src/typescript/generated \
+    --grpc-web_out=import_style=commonjs+dts,mode=grpcwebtext:./src/typescript/generated
+
+RUN cd ./packages/closure-wrapper && \
+  yarn install && \
+  yarn build && \
+  cd ../grpc-web && \
+  npm install --ignore-scripts && \
   npm run build && \
   npm link
 
@@ -94,4 +110,4 @@ COPY ./src ./src
 COPY ./test ./test
 
 RUN /usr/local/bin/buildifier \
-  --mode=check --lint=warn --warnings=all -r ./WORKSPACE javascript net
+  --mode=check --lint=warn --warnings=all -r ./MODULE.bazel javascript net

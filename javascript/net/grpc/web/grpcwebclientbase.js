@@ -28,7 +28,6 @@ goog.module('grpc.web.GrpcWebClientBase');
 goog.module.declareLegacyNamespace();
 
 
-const AbstractClientBase = goog.require('grpc.web.AbstractClientBase');
 const ClientOptions = goog.requireType('grpc.web.ClientOptions');
 const ClientReadableStream = goog.require('grpc.web.ClientReadableStream');
 const ClientUnaryCallImpl = goog.require('grpc.web.ClientUnaryCallImpl');
@@ -40,6 +39,7 @@ const RpcError = goog.require('grpc.web.RpcError');
 const StatusCode = goog.require('grpc.web.StatusCode');
 const XhrIo = goog.require('goog.net.XhrIo');
 const googCrypt = goog.require('goog.crypt.base64');
+const {AbstractClientBase, PromiseCallOptions, getHostname} = goog.require('grpc.web.AbstractClientBase');
 const {Status} = goog.require('grpc.web.Status');
 const {StreamInterceptor, UnaryInterceptor} = goog.require('grpc.web.Interceptor');
 const {toObject} = goog.require('goog.collections.maps');
@@ -79,6 +79,21 @@ class GrpcWebClientBase {
         goog.getObjectByName('withCredentials', options) || false;
 
     /**
+     * The maximum allowed inbound message length in bytes (0 = unlimited).
+     * @const
+     * @private {number}
+     */
+    let maxReceiveMessageSize = options.maxReceiveMessageSize;
+    if (maxReceiveMessageSize === undefined) {
+      maxReceiveMessageSize =
+          goog.getObjectByName('maxReceiveMessageSize', options);
+    }
+    this.maxReceiveMessageSize_ =
+        (maxReceiveMessageSize === undefined || maxReceiveMessageSize === null) ?
+        4 * 1024 * 1024 :
+        maxReceiveMessageSize;
+
+    /**
      * @const {!Array<!StreamInterceptor>}
      * @private
      */
@@ -101,7 +116,7 @@ class GrpcWebClientBase {
    * @export
    */
   rpcCall(method, requestMessage, metadata, methodDescriptor, callback) {
-    const hostname = AbstractClientBase.getHostname(method, methodDescriptor);
+    const hostname = getHostname(method, methodDescriptor);
     const invoker = GrpcWebClientBase.runInterceptors_(
         (request) => this.startStream_(request, hostname),
         this.streamInterceptors_);
@@ -112,21 +127,38 @@ class GrpcWebClientBase {
   }
 
   /**
-   * @override
-   * @export
+   * @param {string} method The method to invoke
+   * @param {REQUEST} requestMessage The request proto
+   * @param {!Object<string, string>} metadata User defined call metadata
+   * @param {!MethodDescriptor<REQUEST, RESPONSE>} methodDescriptor
+   * @param {?PromiseCallOptions=} options Options for the call
+   * @return {!Promise<RESPONSE>}
+   * @template REQUEST, RESPONSE
    */
-  thenableCall(method, requestMessage, metadata, methodDescriptor) {
-    const hostname = AbstractClientBase.getHostname(method, methodDescriptor);
+  thenableCall(
+      method, requestMessage, metadata, methodDescriptor, options = {}) {
+    const hostname = getHostname(method, methodDescriptor);
+    const signal = options && options.signal;
     const initialInvoker = (request) => new Promise((resolve, reject) => {
+      // If the signal is already aborted, immediately reject the promise
+      // and don't issue the call.
+      if (signal && signal.aborted) {
+        const error = new RpcError(StatusCode.CANCELLED, 'Aborted');
+        error.cause = signal.reason;
+        reject(error);
+        return;
+      }
+
       const stream = this.startStream_(request, hostname);
       let unaryMetadata;
       let unaryStatus;
       let unaryMsg;
       GrpcWebClientBase.setCallback_(
-          stream, (error, response, status, metadata) => {
+          stream,
+          (error, response, status, metadata, unaryResponseReceived) => {
             if (error) {
               reject(error);
-            } else if (response) {
+            } else if (unaryResponseReceived) {
               unaryMsg = response;
             } else if (status) {
               unaryStatus = status;
@@ -136,7 +168,19 @@ class GrpcWebClientBase {
               resolve(request.getMethodDescriptor().createUnaryResponse(
                   unaryMsg, unaryMetadata, unaryStatus));
             }
-          }, true);
+          },
+          true);
+
+      // Wire up cancellation from the abort signal, if any.
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          stream.cancel();
+
+          const error = new RpcError(StatusCode.CANCELLED, 'Aborted');
+          error.cause = /** @type {!AbortSignal} */ (signal).reason;
+          reject(error);
+        });
+      }
     });
     const invoker = GrpcWebClientBase.runInterceptors_(
         initialInvoker, this.unaryInterceptors_);
@@ -152,12 +196,13 @@ class GrpcWebClientBase {
    * @param {!Object<string, string>} metadata User defined call metadata
    * @param {!MethodDescriptor<REQUEST, RESPONSE>} methodDescriptor Information
    *     of this RPC method
+   * @param {?PromiseCallOptions=} options Options for the call
    * @return {!Promise<RESPONSE>}
    * @template REQUEST, RESPONSE
    */
-  unaryCall(method, requestMessage, metadata, methodDescriptor) {
-    return /** @type {!Promise<RESPONSE>}*/ (
-        this.thenableCall(method, requestMessage, metadata, methodDescriptor));
+  unaryCall(method, requestMessage, metadata, methodDescriptor, options = {}) {
+    return /** @type {!Promise<RESPONSE>}*/ (this.thenableCall(
+        method, requestMessage, metadata, methodDescriptor, options));
   }
 
   /**
@@ -165,7 +210,7 @@ class GrpcWebClientBase {
    * @export
    */
   serverStreaming(method, requestMessage, metadata, methodDescriptor) {
-    const hostname = AbstractClientBase.getHostname(method, methodDescriptor);
+    const hostname = getHostname(method, methodDescriptor);
     const invoker = GrpcWebClientBase.runInterceptors_(
         (request) => this.startStream_(request, hostname),
         this.streamInterceptors_);
@@ -190,7 +235,8 @@ class GrpcWebClientBase {
     const genericTransportInterface = {
       xhr: xhr,
     };
-    const stream = new GrpcWebClientReadableStream(genericTransportInterface);
+    const stream = new GrpcWebClientReadableStream(
+        genericTransportInterface, this.maxReceiveMessageSize_);
     stream.setResponseDeserializeFn(
         methodDescriptor.getResponseDeserializeFn());
 
@@ -222,9 +268,16 @@ class GrpcWebClientBase {
    * @static
    * @template RESPONSE
    * @param {!ClientReadableStream<RESPONSE>} stream
-   * @param {function(?RpcError, ?RESPONSE, ?Status=, ?Object<string, string>=)|
+   * @param {function(?RpcError, ?RESPONSE, ?Status=, ?Object<string, string>=, ?boolean)|
    *     function(?RpcError,?RESPONSE)} callback
-   * @param {boolean} useUnaryResponse
+   * @param {boolean} useUnaryResponse Pass true to have the client make
+   * multiple calls to the callback, using (error, response, status,
+   * metadata, unaryResponseReceived) arguments. One of error, status,
+   * metadata, or unaryResponseReceived will be truthy to indicate which piece
+   * of information the client is providing in that call. After the stream
+   * ends, it will call the callback an additional time with all falsy
+   * arguments. Pass false to have the client make one call to the callback
+   * using (error, response) arguments.
    */
   static setCallback_(stream, callback, useUnaryResponse) {
     let isResponseReceived = false;
@@ -271,12 +324,16 @@ class GrpcWebClientBase {
             code: StatusCode.UNKNOWN,
             message: 'Incomplete response',
           });
+        } else if (useUnaryResponse) {
+          callback(
+            null, responseReceived, null, null,
+            /* unaryResponseReceived= */ true);
         } else {
           callback(null, responseReceived);
         }
       }
       if (useUnaryResponse) {
-        callback(null, null);  // trigger unaryResponse
+        callback(null, null);
       }
     });
   }
@@ -359,12 +416,9 @@ class GrpcWebClientBase {
    *     (!Promise<RESPONSE>|!ClientReadableStream<RESPONSE>)}
    */
   static runInterceptors_(invoker, interceptors) {
-    let curInvoker = invoker;
-    interceptors.forEach((interceptor) => {
-      const lastInvoker = curInvoker;
-      curInvoker = (request) => interceptor.intercept(request, lastInvoker);
-    });
-    return curInvoker;
+    return interceptors.reduce((accumulatedInvoker, interceptor) => {
+      return (request) => interceptor.intercept(request, accumulatedInvoker);
+    }, invoker);
   }
 }
 
